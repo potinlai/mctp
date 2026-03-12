@@ -2288,38 +2288,33 @@ static int endpoint_assign_eid(struct ctx *ctx, sd_bus_error *berr,
 		return -EPROTO;
 	}
 
-	if (static_eid) {
-		rc = add_peer(ctx, dest, static_eid, net, &peer, false);
-		if (rc < 0)
-			return rc;
+	struct eid_allocation alloc;
+	unsigned int alloc_size = 0;
 
+	if (assign_bridge)
+		alloc_size = ctx->max_pool_size;
+
+	rc = allocate_eid(ctx, n, alloc_size, &alloc);
+	if (rc) {
+		warnx("Cannot allocate any EID (+pool %d) on net %d for %s",
+		      alloc_size, net, dest_phys_tostr(dest));
+		sd_bus_error_setf(berr, SD_BUS_ERROR_FAILED, "Ran out of EIDs");
+		return -EADDRNOTAVAIL;
+	}
+
+	if (static_eid) {
 		new_eid = static_eid;
 	} else {
-		struct eid_allocation alloc;
-		unsigned int alloc_size = 0;
-
-		if (assign_bridge)
-			alloc_size = ctx->max_pool_size;
-
-		rc = allocate_eid(ctx, n, alloc_size, &alloc);
-		if (rc) {
-			warnx("Cannot allocate any EID (+pool %d) on net %d for %s",
-			      alloc_size, net, dest_phys_tostr(dest));
-			sd_bus_error_setf(berr, SD_BUS_ERROR_FAILED,
-					  "Ran out of EIDs");
-			return -EADDRNOTAVAIL;
-		}
-
 		new_eid = alloc.start;
-
-		rc = add_peer(ctx, dest, new_eid, net, &peer, false);
-		if (rc < 0)
-			return rc;
-
-		peer->pool_size = alloc.extent;
-		if (peer->pool_size)
-			peer->pool_start = new_eid + 1;
 	}
+
+	rc = add_peer(ctx, dest, new_eid, net, &peer, false);
+	if (rc < 0)
+		return rc;
+
+	peer->pool_size = alloc.extent;
+	if (peer->pool_size)
+		peer->pool_start = new_eid + 1;
 
 	/* Add a route to the peer prior to assigning it an EID.
 	 * The peer may initiate communication immediately, so
@@ -3055,7 +3050,7 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 		}
 	}
 
-	rc = endpoint_assign_eid(ctx, berr, dest, &peer, eid, false);
+	rc = endpoint_assign_eid(ctx, berr, dest, &peer, eid, true);
 	if (rc < 0) {
 		goto err;
 	}
@@ -3063,6 +3058,9 @@ static int method_assign_endpoint_static(sd_bus_message *call, void *data,
 	peer_path = path_from_peer(peer);
 	if (!peer_path)
 		goto err;
+
+	if (peer->pool_size > 0)
+		endpoint_allocate_eids(peer);
 
 	return sd_bus_reply_method_return(call, "yisb", peer->eid, peer->net,
 					  peer_path, 1);
